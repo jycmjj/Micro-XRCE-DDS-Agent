@@ -895,6 +895,7 @@ bool FastDDSMiddleware::write_data(
         uint16_t datawriter_id,
         const std::vector<uint8_t>& data)
 {
+    
    bool rv = false;
    auto it = datawriters_.find(datawriter_id);
    if (datawriters_.end() != it)
