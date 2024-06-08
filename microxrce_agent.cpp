@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include <uxr/agent/AgentInstance.hpp>
+
+#include <uxr/agent/xrcedds_demo.hpp>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -25,18 +27,19 @@
 #include <mutex>
 #include <condition_variable>
 #include "Student.h"
+#include "fileInfo.h"
+#include <atomic>
+#include <memory>
+#include "ucdr/microcdr.h"
+
 
 #define PORT 2024
+
 using namespace std;
 struct AgentMesg
 {
     int argcAgent;
     char **argvAgent;
-};
-
-struct FileInfo {
-    string filename;
-    unsigned long long timestamp;
 };
 
 mutex mtx;
@@ -67,7 +70,7 @@ unsigned long long getCurrentTimestamp() {
     return static_cast<unsigned long long>(time(0));
 }
 
-FileInfo saveToFile(const vector<Student>& students) {
+fileInfo saveToFile(const vector<Student>& students) {
     string filename = "../file/" + getCurrentTime() + ".txt";
     ofstream outfile(filename);
     for (const auto& student : students) {
@@ -79,9 +82,11 @@ FileInfo saveToFile(const vector<Student>& students) {
     }
     outfile.close();
 
-    FileInfo fileInfo;
-    fileInfo.filename = filename;
+    fileInfo fileInfo;
+    strncpy(fileInfo.filename, filename.c_str(), sizeof(fileInfo.filename) - 1);
+    fileInfo.filename[sizeof(fileInfo.filename) - 1] = '\0'; // Ensure null-termination
     fileInfo.timestamp = getCurrentTimestamp();
+
     return fileInfo;
 }
 
@@ -102,21 +107,21 @@ void fileSaver() {
         if (!local_students.empty()) {
             sort(local_students.begin(), local_students.end(), compareStudents);
             saveToFile(local_students);
+            local_students.clear();
         }
     }
 }
 
 Student deserializeStudent(const char* buffer) { // 反序列化
-    Student student;
+    Student student3;
     char name[50], hobby1[30], hobby2[30], hobby3[30];
-    int fields = sscanf(buffer, "%29[^,],%ld,%ld,%29[^,],%29[^,],%29[^,]", name, &student.number, &student.grade, hobby1, hobby2, hobby3);
-    student.name = string(name);
-    student.hobby[0] = hobby1;
-    student.hobby[1] = hobby2;
-    student.hobby[2] = hobby3;
-    return student;
+    int fields = sscanf(buffer, "%29[^,],%ld,%ld,%29[^,],%29[^,],%29[^,]", name, &student3.number, &student3.grade, hobby1, hobby2, hobby3);
+    student3.name = string(name);
+    student3.hobby[0] = hobby1;
+    student3.hobby[1] = hobby2;
+    student3.hobby[2] = hobby3;
+    return student3;
 }
-
 void receiveData() {
     int server_fd, new_socket;
     struct sockaddr_in address;
@@ -138,7 +143,7 @@ void receiveData() {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
 
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind 错误");
         exit(EXIT_FAILURE);
     }
@@ -148,14 +153,13 @@ void receiveData() {
         exit(EXIT_FAILURE);
     }
 
-    vector<thread> client_threads; 
+    vector<thread> client_threads; // 存放客户端线程的向量
 
     while (true) {
-        if ((new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
             perror("accept 错误");
             exit(EXIT_FAILURE);
         }
-
         // 创建一个新线程来处理每个客户端
         client_threads.emplace_back([new_socket]() {
             char buffer[256] = {0};
@@ -177,6 +181,7 @@ void receiveData() {
                     }
                 }
                 cv.notify_one();
+
             } else {
                 cerr << "接收到不完整的学生数据" << endl;
             }
@@ -184,14 +189,67 @@ void receiveData() {
         });
     }
 
-    for (auto& thread : client_threads) {
+    // 加入所有客户端线程（尽管在这种情况下，循环是无限的）
+    for (auto &thread : client_threads) {
         thread.join();
     }
+
+    // 结束文件保存线程
     {
         lock_guard<mutex> lock(mtx);
         done = true;
     }
     cv.notify_one();
+}
+
+
+//#include <mutex>
+
+// extern std::mutex agent2center_mtx; // 引用全局互斥锁
+
+void processAgentData() {
+    while (true) {
+        Agent2CentorQueue &queue1 = Agent2CentorQueue::instance();
+
+        if (!(queue1.center_read_queue.IsEmpty())) {
+            student serialized_data = *(queue1.center_read_queue.Pop());
+            Student student2;
+            //student.deserialize(des_ub);
+            student2.name = serialized_data.namee;
+            student2.number =serialized_data.number;
+            student2.grade =serialized_data.gradle;
+            student2.hobby[0] = serialized_data.hobby[0];
+            student2.hobby[1] = serialized_data.hobby[1];
+            student2.hobby[2] = serialized_data.hobby[2];
+            //std::lock_guard<std::mutex> lock(mtx);  // 锁定
+            // 处理数据
+            std::cout << "Processed Data - Name: " << student2.name << ", Number: " << student2.number
+                      << ", Grade: " << student2.grade << ", Hobbies: " << student2.hobby[0] << ", "
+                      << student2.hobby[1] << ", " << student2.hobby[2] << std::endl;
+
+            // 将学生数据添加到全局 students 容器中
+                {
+                    //lock_guard<mutex> lock(mtx);
+                    students.push_back(student2);
+                    if (students.size() >= 1000) {
+                        saveFlag = true;
+                    }
+                }
+            // 如果 students 容器中的数据量超过阈值，设置 saveFlag 以触发保存
+
+            cv.notify_one(); // 通知保存线程
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 避免空转
+        }
+    }
+}
+// std::mutex agent2center_mtx;
+
+void processClientData() {
+    while (true) {
+        Center2AgentQueue &queue2 = Center2AgentQueue::instance();
+
+    }
 }
 void *agent(void *arg)
 {
@@ -209,6 +267,9 @@ void *agent(void *arg)
 }
 
 int main(int argc, char** argv) {
+    Center2AgentQueue::instance();
+    Agent2CentorQueue::instance();
+
     AgentMesg *agentMesg = new AgentMesg;
     agentMesg->argcAgent = argc;
     agentMesg->argvAgent = argv;
@@ -219,12 +280,20 @@ int main(int argc, char** argv) {
     // 启动文件保存线程
     thread saverThread(fileSaver);
 
-
     // 启动数据接收线程
     thread receiverThread(receiveData);
+    // // 启动处理 Agent2CentorQueue 数据的线程
+    thread processThread(processAgentData);
+
+    // thread processThread2(processClientData);
+
+    // 启动数据接收线程
+    
 
 
     receiverThread.join();
+    processThread.join();
+    //processThread2.join();
     saverThread.join();
 
     return 0;

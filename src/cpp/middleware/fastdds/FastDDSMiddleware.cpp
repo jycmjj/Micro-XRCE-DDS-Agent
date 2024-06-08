@@ -15,6 +15,8 @@
 #include <uxr/agent/middleware/fastdds/FastDDSMiddleware.hpp>
 #include <uxr/agent/utils/Conversion.hpp>
 #include <uxr/agent/logger/Logger.hpp>
+#include <ucdr/microcdr.h>
+#include <uxr/agent/xrcedds_demo.hpp>
 
 #include <fastrtps/xmlparser/XMLProfileManager.h>
 #include <fastdds/dds/subscriber/SampleInfo.hpp>
@@ -891,11 +893,36 @@ bool FastDDSMiddleware::delete_replier(
 /**********************************************************************************************************************
  * Write/Read functions.
  **********************************************************************************************************************/
+
+// #include <mutex>
+
+std::mutex agent2center_mtx;
 bool FastDDSMiddleware::write_data(
         uint16_t datawriter_id,
         const std::vector<uint8_t>& data)
 {
-    
+    for(uint8_t byte : data){
+        std::cout<<static_cast<int>(byte)<<" ";
+    }
+    std::cout<<std::endl;
+    uint8_t *bufferPtr = const_cast<uint8_t *>(data.data());
+
+    ucdrBuffer udr;
+    ucdr_init_buffer(&udr,bufferPtr ,data.size());
+
+    student s;
+    s.des(udr);
+    // std::cout<<"Deserialized: "<<"Name: "<<s.name<<"\n"
+    //         <<"Grade: "<<s.grade<<"\n"
+    //         <<"Number: "<<s.number<<"\n"
+    //         <<"Hobby: "<<s.hobby[0]<<" "<<s.hobby[1]<<" "<<s.hobby[2]<<std::endl;
+
+        // 将数据存储到全局队列中
+    {
+        //std::lock_guard<std::mutex> lock(agent2center_mtx);
+        Agent2CentorQueue::instance().center_read_queue.Push(s);
+    }
+
    bool rv = false;
    auto it = datawriters_.find(datawriter_id);
    if (datawriters_.end() != it)
